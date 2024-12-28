@@ -1,19 +1,19 @@
-import os
-import cv2
-import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext
-from paddleocr import PaddleOCR
-from moviepy.video.io.VideoFileClip import VideoFileClip
-from tqdm import tqdm
-import logging
-from concurrent.futures import ThreadPoolExecutor
-import numpy as np
-import time
 import json
-import threading
+import logging
 import multiprocessing
+import os
+import threading
+import time
+import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
+from tkinter import ttk, filedialog, scrolledtext
+
+import cv2
 import torch  # 用于GPU检测
+from moviepy.video.io.VideoFileClip import VideoFileClip
+from paddleocr import PaddleOCR
 from skimage.metrics import structural_similarity as ssim
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 配置日志级别，减少不必要的输出
 logging.basicConfig(level=logging.INFO)
@@ -366,9 +366,8 @@ class SubtitleExtractorGUI:
         self.root.after(0, lambda: self.log(message))
 
     def process_videos(self, input_folder):
-        """处理指定文件夹中的所有视频"""
+        """并行处理指定文件夹中的所有视频"""
         try:
-            output_txt = os.path.join(input_folder, "output.txt")
             start_time = time.time()
             total_duration = 0
             total_subtitles = 0
@@ -382,65 +381,85 @@ class SubtitleExtractorGUI:
                 rec_thresh=0.6,
             )
 
-            # 设置线程池大小
-            thread_count = self.thread_count.get() if not self.use_gpu.get() else 2
+            # 获取所有视频文件
+            video_files = [f for f in sorted(os.listdir(input_folder))
+                           if f.endswith(('.mp4', '.avi', '.mkv', '.mov', '.flv'))]
 
-            with open(output_txt, 'w', encoding='utf-8') as output_file:
-                video_files = [f for f in sorted(os.listdir(input_folder))
-                              if f.endswith(('.mp4', '.avi', '.mkv', '.mov', '.flv'))]
+            self.root.after(0, lambda: self.progress.configure(maximum=len(video_files)))
 
-                self.root.after(0, lambda: self.progress.configure(maximum=len(video_files)))
-
-                for i, video_file in enumerate(video_files):
+            # 使用线程池并行处理视频
+            with ThreadPoolExecutor(max_workers=self.thread_count.get()) as executor:
+                futures = []
+                for video_file in video_files:
                     if self.stop_processing:
-                        self.update_log("\n用户停止处理")
                         break
-                    video_path = os.path.join(input_folder, video_file)
-                    frame_dir = os.path.join(input_folder, "frames")
+                    future = executor.submit(
+                        self.process_single_video,
+                        input_folder, video_file, ocr
+                    )
+                    futures.append(future)
 
-                    self.update_log(f"\n处理视频 ({i+1}/{len(video_files)}): {video_file}")
-
+                # 等待所有任务完成并收集结果
+                for future in as_completed(futures):
                     try:
-                        self.update_log("获取视频信息...")
-                        with VideoFileClip(video_path) as video:
-                            duration = video.duration
-                            total_duration += duration
-                            self.update_log(f"视频时长: {duration:.1f} 秒")
-
-                        self.extract_frames(video_path, frame_dir)
-                        subtitles = self.extract_subtitles_from_frames(frame_dir, ocr)
-
-                        if self.filter_words.get().strip():
-                            self.update_log("\n开始过滤字幕...")
-                            filtered_subtitles = self.filter_subtitles(subtitles)
-                            self.update_log(f"过滤前: {len(subtitles)} 条，过滤后: {len(filtered_subtitles)} 条")
-                        else:
-                            filtered_subtitles = subtitles
-
-                        total_subtitles += len(filtered_subtitles)
-
-                        self.update_log("\n保存字幕结果...")
-                        output_file.write(f"{video_file}\n")
-                        for subtitle in filtered_subtitles:
-                            output_file.write(f"{subtitle}\n")
-                        output_file.write("\n")
-
-                        self.update_log("清理临时文件...")
-                        for frame_file in os.listdir(frame_dir):
-                            os.remove(os.path.join(frame_dir, frame_file))
-                        os.rmdir(frame_dir)
-
+                        duration, subtitles_count = future.result()
+                        total_duration += duration
+                        total_subtitles += subtitles_count
                     except Exception as e:
                         self.update_log(f"处理视频时出错: {str(e)}")
-                        continue
-
-                    self.update_progress(i + 1)
 
             total_time = time.time() - start_time
             self.display_summary_statistics(len(video_files), total_duration, total_subtitles, total_time)
 
         except Exception as e:
             self.update_log(f"处理过程中出现错误: {str(e)}")
+
+    def process_single_video(self, input_folder, video_file, ocr):
+        """处理单个视频"""
+        video_path = os.path.join(input_folder, video_file)
+        frame_dir = os.path.join(input_folder, f"frames_{os.path.splitext(video_file)[0]}")
+        output_txt = os.path.join(input_folder, f"{os.path.splitext(video_file)[0]}.txt")
+
+        self.update_log(f"\n处理视频: {video_file}")
+
+        try:
+            # 获取视频信息
+            with VideoFileClip(video_path) as video:
+                duration = video.duration
+                self.update_log(f"视频时长: {duration:.1f} 秒")
+
+            # 提取帧
+            self.extract_frames(video_path, frame_dir)
+
+            # 识别字幕
+            subtitles = self.extract_subtitles_from_frames(frame_dir, ocr)
+
+            # 过滤字幕
+            if self.filter_words.get().strip():
+                self.update_log("\n开始过滤字幕...")
+                filtered_subtitles = self.filter_subtitles(subtitles)
+                self.update_log(f"过滤前: {len(subtitles)} 条，过滤后: {len(filtered_subtitles)} 条")
+            else:
+                filtered_subtitles = subtitles
+
+            # 保存字幕结果
+            self.update_log("\n保存字幕结果...")
+            with open(output_txt, 'w', encoding='utf-8') as output_file:
+                output_file.write(f"{video_file}\n")
+                for subtitle in filtered_subtitles:
+                    output_file.write(f"{subtitle}\n")
+
+            # 清理临时文件
+            self.update_log("清理临时文件...")
+            for frame_file in os.listdir(frame_dir):
+                os.remove(os.path.join(frame_dir, frame_file))
+            os.rmdir(frame_dir)
+
+            return duration, len(filtered_subtitles)
+
+        except Exception as e:
+            self.update_log(f"处理视频 {video_file} 时出错: {str(e)}")
+            raise
     def display_summary_statistics(self, video_count, total_duration, total_subtitles, total_time):
         """在界面显示总体统计信息"""
         summary = f"""
