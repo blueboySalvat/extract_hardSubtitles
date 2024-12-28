@@ -5,16 +5,15 @@ import os
 import threading
 import time
 import tkinter as tk
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tkinter import ttk, filedialog, scrolledtext
 
 import cv2
 import torch  # 用于GPU检测
+from PIL import Image, ImageTk  # 新增导入
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from paddleocr import PaddleOCR
 from skimage.metrics import structural_similarity as ssim
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import psutil
 
 # 配置日志级别，减少不必要的输出
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +25,7 @@ class SubtitleExtractorGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("视频字幕提取器")
-        self.root.geometry("800x600")
+        self.root.geometry("1000x800")
 
         # 获取CPU核心数
         self.cpu_count = multiprocessing.cpu_count()
@@ -51,10 +50,11 @@ class SubtitleExtractorGUI:
         }
         self.load_config()
 
+        # 初始化当前帧
+        self.frames = []  # 存储从视频中抽取的三帧
+        self.frame_labels = []  # 存储用于展示帧的 Label 控件
+
         self.create_gui()
-
-
-
 
     def create_gui(self):
         """创建图形界面"""
@@ -89,11 +89,21 @@ class SubtitleExtractorGUI:
 
         ttk.Label(crop_frame, text="上边界 (0-1):").grid(row=0, column=0, padx=(0, 5))
         self.crop_top = tk.DoubleVar(value=self.config['crop_top'])
-        ttk.Entry(crop_frame, textvariable=self.crop_top, width=10).grid(row=0, column=1, sticky=tk.W)
+        self.crop_top_scale = ttk.Scale(crop_frame, from_=0, to=1, variable=self.crop_top, orient=tk.HORIZONTAL, length=200)
+        self.crop_top_scale.grid(row=0, column=1, sticky=tk.W)
+        self.crop_top_label = ttk.Label(crop_frame, text=f"{self.crop_top.get():.2f}")
+        self.crop_top_label.grid(row=0, column=2, padx=(5, 0))
 
-        ttk.Label(crop_frame, text="下边界 (0-1):").grid(row=0, column=2, padx=(20, 5))
+        ttk.Label(crop_frame, text="下边界 (0-1):").grid(row=0, column=3, padx=(20, 5))
         self.crop_bottom = tk.DoubleVar(value=self.config['crop_bottom'])
-        ttk.Entry(crop_frame, textvariable=self.crop_bottom, width=10).grid(row=0, column=3, sticky=tk.W)
+        self.crop_bottom_scale = ttk.Scale(crop_frame, from_=0, to=1, variable=self.crop_bottom, orient=tk.HORIZONTAL, length=200)
+        self.crop_bottom_scale.grid(row=0, column=4, sticky=tk.W)
+        self.crop_bottom_label = ttk.Label(crop_frame, text=f"{self.crop_bottom.get():.2f}")
+        self.crop_bottom_label.grid(row=0, column=5, padx=(5, 0))
+
+        # 绑定滑块值变化事件
+        self.crop_top_scale.bind("<Motion>", lambda e: self.update_crop_labels_and_preview())
+        self.crop_bottom_scale.bind("<Motion>", lambda e: self.update_crop_labels_and_preview())
 
         # 性能设置区域
         settings_frame = ttk.LabelFrame(main_frame, text="性能设置", padding="10")
@@ -124,9 +134,19 @@ class SubtitleExtractorGUI:
         self.progress = ttk.Progressbar(main_frame, mode='determinate')
         self.progress.grid(row=4, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
 
+        # 帧展示区域
+        self.frame_frame = ttk.Frame(main_frame)
+        self.frame_frame.grid(row=5, column=0, columnspan=3, pady=(10, 0), sticky=(tk.W, tk.E))
+
+        # 初始化三个帧展示 Label
+        for i in range(3):
+            frame_label = ttk.Label(self.frame_frame)
+            frame_label.grid(row=0, column=i, padx=10, pady=10)
+            self.frame_labels.append(frame_label)
+
         # 日志显示区域
         log_frame = ttk.Frame(main_frame)
-        log_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+        log_frame.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
         log_frame.grid_rowconfigure(0, weight=1)
         log_frame.grid_columnconfigure(0, weight=1)
 
@@ -135,7 +155,7 @@ class SubtitleExtractorGUI:
 
         # 按钮区域
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=6, column=0, columnspan=3, pady=(10, 0))
+        button_frame.grid(row=7, column=0, columnspan=3, pady=(10, 0))
 
         self.start_button = ttk.Button(button_frame, text="开始处理", command=self.start_processing, width=20)
         self.start_button.pack(side=tk.LEFT, padx=5)
@@ -145,13 +165,73 @@ class SubtitleExtractorGUI:
         self.stop_button.pack(side=tk.LEFT, padx=5)
 
         # 配置主框架的行权重
-        main_frame.grid_rowconfigure(5, weight=1)
+        main_frame.grid_rowconfigure(6, weight=1)
 
     def browse_folder(self):
-        """选择输入文件夹"""
+        """选择输入文件夹并加载三帧"""
         folder = filedialog.askdirectory()
         if folder:
             self.folder_path.set(folder)
+            # 加载文件夹中的第一个视频文件
+            video_files = [f for f in sorted(os.listdir(folder))
+                           if f.endswith(('.mp4', '.avi', '.mkv', '.mov', '.flv'))]
+            if video_files:
+                video_path = os.path.join(folder, video_files[0])
+                self.frames = self.extract_sample_frames(video_path)  # 抽取三帧
+                self.update_frame_previews()  # 更新帧展示
+
+    def extract_sample_frames(self, video_path):
+        """从视频中抽取三帧（20%、50%、80%）"""
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"无法打开视频文件: {video_path}")
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_indices = [int(total_frames * 0.2), int(total_frames * 0.5), int(total_frames * 0.8)]
+
+        frames = []
+        for idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if ret:
+                frames.append(frame)
+
+        cap.release()
+        return frames
+
+    def update_frame_previews(self):
+        """更新帧展示区域"""
+        for i, frame in enumerate(self.frames):
+            if frame is not None:
+                # 绘制预选框
+                frame_with_box = self.draw_crop_box(frame)
+                # 转换为 Tkinter 可显示的格式
+                frame_with_box = cv2.cvtColor(frame_with_box, cv2.COLOR_BGR2RGB)
+                frame_with_box = cv2.resize(frame_with_box, (300, 200))  # 调整大小以适应展示区域
+                img = Image.fromarray(frame_with_box)
+                imgtk = ImageTk.PhotoImage(image=img)
+                self.frame_labels[i].config(image=imgtk)
+                self.frame_labels[i].image = imgtk
+
+    def draw_crop_box(self, frame):
+        """在帧上绘制裁剪区域的预选框"""
+        h = frame.shape[0]
+        top = int(h * self.crop_top.get())
+        bottom = int(h * self.crop_bottom.get())
+
+        # 复制帧并绘制矩形框
+        frame_with_box = frame.copy()
+        cv2.rectangle(frame_with_box, (0, top), (frame.shape[1], bottom), (0, 255, 0), 2)
+        return frame_with_box
+
+    def update_crop_labels_and_preview(self):
+        """更新裁剪区域标签和帧预览"""
+        # 更新标签
+        self.crop_top_label.config(text=f"{self.crop_top.get():.2f}")
+        self.crop_bottom_label.config(text=f"{self.crop_bottom.get():.2f}")
+
+        # 更新帧预览
+        self.update_frame_previews()
 
     def load_config(self):
         """加载配置文件"""
