@@ -1,5 +1,8 @@
 {
   "filter_words": [],
-  "crop_top": 0.8,
-  "crop_bottom": 0.95
+  "crop_top": 0.85,
+  "crop_bottom": 1.0,
+  "use_gpu": false,
+  "thread_count": 4,
+  "batch_size": 8
 }
