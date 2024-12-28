@@ -1,0 +1,8 @@
+paddleocr>=2.6.0
+opencv-python>=4.5.0
+moviepy>=1.0.0
+torch>=1.10.0  # 可选，用于GPU加速
+scikit-image>=0.18.0
+numpy>=1.21.0
+psutil>=5.8.0
+tkinter>=8.6  # 通常Python自带，无需单独安装

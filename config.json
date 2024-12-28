@@ -4,5 +4,6 @@
   "crop_bottom": 1.0,
   "use_gpu": false,
   "thread_count": 4,
-  "batch_size": 8
+  "batch_size": 8,
+  "use_memory": true
 }

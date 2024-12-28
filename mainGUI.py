@@ -14,6 +14,7 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from paddleocr import PaddleOCR
 from skimage.metrics import structural_similarity as ssim
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import psutil
 
 # 配置日志级别，减少不必要的输出
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +52,9 @@ class SubtitleExtractorGUI:
         self.load_config()
 
         self.create_gui()
+
+
+
 
     def create_gui(self):
         """创建图形界面"""
@@ -96,7 +100,7 @@ class SubtitleExtractorGUI:
         settings_frame.grid(row=3, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
         settings_frame.grid_columnconfigure(1, weight=1)
 
-        # GPU选项
+        # GPU 选项
         self.use_gpu = tk.BooleanVar(value=self.config['use_gpu'])
         gpu_check = ttk.Checkbutton(settings_frame, text="使用GPU加速", variable=self.use_gpu)
         gpu_check.grid(row=0, column=0, padx=(0, 20))
@@ -104,12 +108,17 @@ class SubtitleExtractorGUI:
             gpu_check.configure(state='disabled')
             ttk.Label(settings_frame, text="(未检测到可用GPU)").grid(row=0, column=1, sticky=tk.W)
 
+        # 内存加速选项
+        self.use_memory = tk.BooleanVar(value=self.config.get('use_memory', False))
+        memory_check = ttk.Checkbutton(settings_frame, text="使用内存加速", variable=self.use_memory)
+        memory_check.grid(row=1, column=0, padx=(0, 20))
+
         # 线程数设置
-        ttk.Label(settings_frame, text="CPU线程数:").grid(row=0, column=2, padx=(20, 5))
+        ttk.Label(settings_frame, text="CPU线程数:").grid(row=1, column=2, padx=(20, 5))
         self.thread_count = tk.IntVar(value=self.config['thread_count'])
         thread_spinbox = ttk.Spinbox(settings_frame, from_=1, to=self.cpu_count,
                                      textvariable=self.thread_count, width=5)
-        thread_spinbox.grid(row=0, column=3)
+        thread_spinbox.grid(row=1, column=3)
 
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='determinate')
@@ -156,6 +165,8 @@ class SubtitleExtractorGUI:
         self.config['filter_words'] = [word.strip() for word in self.filter_words.get().split(',') if word.strip()]
         self.config['crop_top'] = self.crop_top.get()
         self.config['crop_bottom'] = self.crop_bottom.get()
+        self.config['use_gpu'] = self.use_gpu.get()
+        self.config['use_memory'] = self.use_memory.get()  # 保存内存加速选项
 
         with open('config.json', 'w', encoding='utf-8') as f:
             json.dump(self.config, f, ensure_ascii=False, indent=2)
@@ -185,21 +196,30 @@ class SubtitleExtractorGUI:
         return score > threshold
 
     def extract_frames(self, video_path, output_dir):
-        """提取视频帧"""
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        """提取视频帧，根据用户选择使用内存加速"""
+        use_memory = self.use_memory.get()
+        if not use_memory:  # 仅在磁盘存储模式下创建文件夹
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"无法打开视频文件: {video_path}")
 
-        # 性能优化：使用opencv的硬件加速
+        # 性能优化：使用 OpenCV 的硬件加速
         if self.use_gpu.get():
             cap.set(cv2.CAP_PROP_BACKEND, cv2.CAP_DSHOW)
 
         fps = int(cap.get(cv2.CAP_PROP_FPS))
-        frame_interval = max(1, fps // 2)  # 确保最小间隔为1
+        frame_interval = max(1, fps // 2)  # 确保最小间隔为 1
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # 根据用户选择使用内存加速
+        if use_memory:
+            self.update_log("使用内存缓存帧数据")
+            frame_cache = []
+        else:
+            self.update_log("使用磁盘存储帧数据")
 
         frame_count = 0
         saved_count = 0
@@ -227,9 +247,13 @@ class SubtitleExtractorGUI:
 
                     # 判断是否相似
                     if prev_subtitle_frame is None or not self.is_similar_frame(prev_subtitle_frame, subtitle_frame):
-                        frame_path = os.path.join(output_dir, f"frame_{saved_count:04d}.jpg")
-                        # 提交保存任务（使用裁剪后的字幕帧）
-                        futures.append(executor.submit(self.save_frame, subtitle_frame.copy(), frame_path))
+                        if use_memory:
+                            # 使用内存缓存帧
+                            frame_cache.append(subtitle_frame.copy())
+                        else:
+                            # 使用磁盘存储帧
+                            frame_path = os.path.join(output_dir, f"frame_{saved_count:04d}.jpg")
+                            futures.append(executor.submit(self.save_frame, subtitle_frame.copy(), frame_path))
                         saved_count += 1
                         prev_subtitle_frame = subtitle_frame.copy()
 
@@ -240,57 +264,107 @@ class SubtitleExtractorGUI:
                 future.result()
 
         cap.release()
-        return saved_count
 
-    def extract_subtitles_from_frames(self, frame_dir, ocr):
+        # 如果使用内存加速，返回帧数据；否则返回 None
+        return frame_cache if use_memory else None
+
+    def extract_subtitles_from_frames(self, frame_dir, ocr, frame_cache=None):
         """从帧中提取字幕文本"""
         subtitles = []
         prev_text = None
 
-        frame_files = sorted(os.listdir(frame_dir),
-                            key=lambda x: int(x.split('_')[1].split('.')[0]))
+        if frame_cache is not None:
+            # 从内存中读取帧数据
+            total_frames = len(frame_cache)
+            self.update_log(f"\n开始识别字幕，共 {total_frames} 帧...")
 
-        total_frames = len(frame_files)
-        self.update_log(f"\n开始识别字幕，共 {total_frames} 帧...")
+            for i, frame in enumerate(frame_cache):
+                try:
+                    # 更新识别进度
+                    if i % 60 == 0:  # 每120帧更新一次进度，避免刷新太频繁
+                        progress = (i + 1) / total_frames * 100
+                        self.update_log(f"\r字幕识别进度: {progress:.1f}%")
 
-        for i, frame_file in enumerate(frame_files):
-            frame_path = os.path.join(frame_dir, frame_file)
-
-            try:
-                # 更新识别进度
-                if i % 120 == 0:  # 每120帧更新一次进度，避免刷新太频繁
-                    progress = (i + 1) / total_frames * 100
-                    self.update_log(f"\r字幕识别进度: {progress:.1f}%")
-
-                results = ocr.ocr(frame_path)
-                if not results or not results[0]:
-                    continue
-
-                current_texts = []
-                for line in results[0]:
-                    if line and len(line) >= 2:
-                        text, confidence = line[1]
-                        if confidence > 0.6:
-                            current_texts.append(text.strip())
-
-                if not current_texts:
-                    continue
-
-                current_text = ' '.join(current_texts)
-                current_text = current_text.replace('\n', ' ').strip()
-
-                if prev_text and current_text:
-                    similarity = len(set(current_text) & set(prev_text)) / max(len(set(current_text)), len(set(prev_text)))
-                    if similarity > 0.8:
+                    # 直接使用内存中的帧数据进行 OCR
+                    results = ocr.ocr(frame)
+                    if not results or not results[0]:
                         continue
 
-                if current_text:
-                    subtitles.append(current_text)
-                    prev_text = current_text
+                    current_texts = []
+                    for line in results[0]:
+                        if line and len(line) >= 2:
+                            text, confidence = line[1]
+                            if confidence > 0.6:
+                                current_texts.append(text.strip())
 
-            except Exception as e:
-                self.update_log(f"\n处理帧 {frame_file} 时出错: {str(e)}")
-                continue
+                    if not current_texts:
+                        continue
+
+                    current_text = ' '.join(current_texts)
+                    current_text = current_text.replace('\n', ' ').strip()
+
+                    if prev_text and current_text:
+                        similarity = len(set(current_text) & set(prev_text)) / max(len(set(current_text)),
+                                                                                   len(set(prev_text)))
+                        if similarity > 0.8:
+                            continue
+
+                    if current_text:
+                        subtitles.append(current_text)
+                        prev_text = current_text
+
+                except Exception as e:
+                    self.update_log(f"\n处理帧 {i} 时出错: {str(e)}")
+                    continue
+        else:
+            # 从磁盘中读取帧数据
+            frame_files = sorted(os.listdir(frame_dir),
+                                 key=lambda x: int(x.split('_')[1].split('.')[0]))
+
+            total_frames = len(frame_files)
+            self.update_log(f"\n开始识别字幕，共 {total_frames} 帧...")
+
+            for i, frame_file in enumerate(frame_files):
+                frame_path = os.path.join(frame_dir, frame_file)
+
+                try:
+                    # 更新识别进度
+                    if i % 120 == 0:  # 每120帧更新一次进度，避免刷新太频繁
+                        progress = (i + 1) / total_frames * 100
+                        self.update_log(f"\r字幕识别进度: {progress:.1f}%")
+
+                    # 从磁盘读取帧数据进行 OCR
+                    frame = cv2.imread(frame_path)
+                    results = ocr.ocr(frame)
+                    if not results or not results[0]:
+                        continue
+
+                    current_texts = []
+                    for line in results[0]:
+                        if line and len(line) >= 2:
+                            text, confidence = line[1]
+                            if confidence > 0.6:
+                                current_texts.append(text.strip())
+
+                    if not current_texts:
+                        continue
+
+                    current_text = ' '.join(current_texts)
+                    current_text = current_text.replace('\n', ' ').strip()
+
+                    if prev_text and current_text:
+                        similarity = len(set(current_text) & set(prev_text)) / max(len(set(current_text)),
+                                                                                   len(set(prev_text)))
+                        if similarity > 0.8:
+                            continue
+
+                    if current_text:
+                        subtitles.append(current_text)
+                        prev_text = current_text
+
+                except Exception as e:
+                    self.update_log(f"\n处理帧 {frame_file} 时出错: {str(e)}")
+                    continue
 
         self.update_log(f"\n字幕识别完成，共识别出 {len(subtitles)} 条字幕")
         return subtitles
@@ -429,10 +503,10 @@ class SubtitleExtractorGUI:
                 self.update_log(f"视频时长: {duration:.1f} 秒")
 
             # 提取帧
-            self.extract_frames(video_path, frame_dir)
+            frame_cache = self.extract_frames(video_path, frame_dir)
 
             # 识别字幕
-            subtitles = self.extract_subtitles_from_frames(frame_dir, ocr)
+            subtitles = self.extract_subtitles_from_frames(frame_dir, ocr, frame_cache)
 
             # 过滤字幕
             if self.filter_words.get().strip():
@@ -449,11 +523,12 @@ class SubtitleExtractorGUI:
                 for subtitle in filtered_subtitles:
                     output_file.write(f"{subtitle}\n")
 
-            # 清理临时文件
-            self.update_log("清理临时文件...")
-            for frame_file in os.listdir(frame_dir):
-                os.remove(os.path.join(frame_dir, frame_file))
-            os.rmdir(frame_dir)
+            # 仅在磁盘存储模式下清理临时文件
+            if not self.use_memory.get():
+                self.update_log("清理临时文件...")
+                for frame_file in os.listdir(frame_dir):
+                    os.remove(os.path.join(frame_dir, frame_file))
+                os.rmdir(frame_dir)
 
             return duration, len(filtered_subtitles)
 
