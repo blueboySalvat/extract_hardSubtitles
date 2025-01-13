@@ -54,6 +54,14 @@ class SubtitleExtractorGUI:
         self.frames = []  # 存储从视频中抽取的三帧
         self.frame_labels = []  # 存储用于展示帧的 Label 控件
 
+        # 添加视频相关的成员变量
+        self.video_path = tk.StringVar()
+        self.video_capture = None
+        
+        # 添加预览控制相关变量
+        self.preview_timer = None
+        self.preview_label = None  # 将在create_gui中初始化
+        
         self.create_gui()
 
     def create_gui(self):
@@ -62,19 +70,37 @@ class SubtitleExtractorGUI:
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         main_frame.grid_columnconfigure(1, weight=1)
 
-        # 文件夹选择区域
-        folder_frame = ttk.Frame(main_frame)
-        folder_frame.grid(row=0, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
-        folder_frame.grid_columnconfigure(1, weight=1)
+        # 修改为视频文件选择区域
+        file_frame = ttk.Frame(main_frame)
+        file_frame.grid(row=0, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
+        file_frame.grid_columnconfigure(1, weight=1)
 
-        ttk.Label(folder_frame, text="输入文件夹:").grid(row=0, column=0, padx=(0, 5))
-        self.folder_path = tk.StringVar()
-        ttk.Entry(folder_frame, textvariable=self.folder_path).grid(row=0, column=1, sticky=(tk.W, tk.E))
-        ttk.Button(folder_frame, text="浏览", command=self.browse_folder).grid(row=0, column=2, padx=(5, 0))
-
+        ttk.Label(file_frame, text="视频文件:").grid(row=0, column=0, padx=(0, 5))
+        ttk.Entry(file_frame, textvariable=self.video_path).grid(row=0, column=1, sticky=(tk.W, tk.E))
+        ttk.Button(file_frame, text="浏览", command=self.browse_video).grid(row=0, column=2, padx=(5, 0))
+        
+        # 修改预览区域
+        preview_frame = ttk.LabelFrame(main_frame, text="视频预览", padding="10")
+        preview_frame.grid(row=1, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
+        preview_frame.grid_columnconfigure(0, weight=1)
+        
+        # 预览显示区域 - 调整大小为500像素宽
+        self.preview_label = ttk.Label(preview_frame)
+        self.preview_label.grid(row=0, column=0, pady=(0, 10))
+        
+        # 添加进度滑块
+        self.video_progress = ttk.Scale(
+            preview_frame,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            command=self.on_progress_change
+        )
+        self.video_progress.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        
         # 过滤词设置区域
         filter_frame = ttk.Frame(main_frame)
-        filter_frame.grid(row=1, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
+        filter_frame.grid(row=2, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
         filter_frame.grid_columnconfigure(1, weight=1)
 
         ttk.Label(filter_frame, text="过滤词(用逗号分隔):").grid(row=0, column=0, padx=(0, 5))
@@ -83,10 +109,11 @@ class SubtitleExtractorGUI:
 
         # 裁剪区域设置框
         crop_frame = ttk.LabelFrame(main_frame, text="裁剪区域设置", padding="10")
-        crop_frame.grid(row=2, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
+        crop_frame.grid(row=3, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
         crop_frame.grid_columnconfigure(1, weight=1)
         crop_frame.grid_columnconfigure(3, weight=1)
 
+        # 上下边界设置
         ttk.Label(crop_frame, text="上边界 (0-1):").grid(row=0, column=0, padx=(0, 5))
         self.crop_top = tk.DoubleVar(value=self.config['crop_top'])
         self.crop_top_scale = ttk.Scale(crop_frame, from_=0, to=1, variable=self.crop_top, orient=tk.HORIZONTAL, length=200)
@@ -101,13 +128,30 @@ class SubtitleExtractorGUI:
         self.crop_bottom_label = ttk.Label(crop_frame, text=f"{self.crop_bottom.get():.2f}")
         self.crop_bottom_label.grid(row=0, column=5, padx=(5, 0))
 
+        # 左右边界设置
+        ttk.Label(crop_frame, text="左边界 (0-1):").grid(row=1, column=0, padx=(0, 5), pady=(10, 0))
+        self.crop_left = tk.DoubleVar(value=self.config.get('crop_left', 0))
+        self.crop_left_scale = ttk.Scale(crop_frame, from_=0, to=1, variable=self.crop_left, orient=tk.HORIZONTAL, length=200)
+        self.crop_left_scale.grid(row=1, column=1, sticky=tk.W, pady=(10, 0))
+        self.crop_left_label = ttk.Label(crop_frame, text=f"{self.crop_left.get():.2f}")
+        self.crop_left_label.grid(row=1, column=2, padx=(5, 0), pady=(10, 0))
+
+        ttk.Label(crop_frame, text="右边界 (0-1):").grid(row=1, column=3, padx=(20, 5), pady=(10, 0))
+        self.crop_right = tk.DoubleVar(value=self.config.get('crop_right', 1))
+        self.crop_right_scale = ttk.Scale(crop_frame, from_=0, to=1, variable=self.crop_right, orient=tk.HORIZONTAL, length=200)
+        self.crop_right_scale.grid(row=1, column=4, sticky=tk.W, pady=(10, 0))
+        self.crop_right_label = ttk.Label(crop_frame, text=f"{self.crop_right.get():.2f}")
+        self.crop_right_label.grid(row=1, column=5, padx=(5, 0), pady=(10, 0))
+
         # 绑定滑块值变化事件
         self.crop_top_scale.bind("<Motion>", lambda e: self.update_crop_labels_and_preview())
         self.crop_bottom_scale.bind("<Motion>", lambda e: self.update_crop_labels_and_preview())
+        self.crop_left_scale.bind("<Motion>", lambda e: self.update_crop_labels_and_preview())
+        self.crop_right_scale.bind("<Motion>", lambda e: self.update_crop_labels_and_preview())
 
         # 性能设置区域
         settings_frame = ttk.LabelFrame(main_frame, text="性能设置", padding="10")
-        settings_frame.grid(row=3, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
+        settings_frame.grid(row=4, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
         settings_frame.grid_columnconfigure(1, weight=1)
 
         # GPU 选项
@@ -132,17 +176,7 @@ class SubtitleExtractorGUI:
 
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='determinate')
-        self.progress.grid(row=4, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
-
-        # 帧展示区域
-        self.frame_frame = ttk.Frame(main_frame)
-        self.frame_frame.grid(row=5, column=0, columnspan=3, pady=(10, 0), sticky=(tk.W, tk.E))
-
-        # 初始化三个帧展示 Label
-        for i in range(3):
-            frame_label = ttk.Label(self.frame_frame)
-            frame_label.grid(row=0, column=i, padx=10, pady=10)
-            self.frame_labels.append(frame_label)
+        self.progress.grid(row=5, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
 
         # 日志显示区域
         log_frame = ttk.Frame(main_frame)
@@ -167,71 +201,108 @@ class SubtitleExtractorGUI:
         # 配置主框架的行权重
         main_frame.grid_rowconfigure(6, weight=1)
 
-    def browse_folder(self):
-        """选择输入文件夹并加载三帧"""
-        folder = filedialog.askdirectory()
-        if folder:
-            self.folder_path.set(folder)
-            # 加载文件夹中的第一个视频文件
-            video_files = [f for f in sorted(os.listdir(folder))
-                           if f.endswith(('.mp4', '.avi', '.mkv', '.mov', '.flv'))]
-            if video_files:
-                video_path = os.path.join(folder, video_files[0])
-                self.frames = self.extract_sample_frames(video_path)  # 抽取三帧
-                self.update_frame_previews()  # 更新帧展示
+    def browse_video(self):
+        """选择视频文件"""
+        video_file = filedialog.askopenfilename(
+            filetypes=[
+                ("视频文件", "*.mp4 *.avi *.mkv *.mov *.flv"),
+                ("所有文件", "*.*")
+            ]
+        )
+        if video_file:
+            self.video_path.set(video_file)
+            # 初始化视频捕获
+            self.init_video_capture()
 
-    def extract_sample_frames(self, video_path):
-        """从视频中抽取三帧（20%、50%、80%）"""
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError(f"无法打开视频文件: {video_path}")
-
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_indices = [int(total_frames * 0.2), int(total_frames * 0.5), int(total_frames * 0.8)]
-
-        frames = []
-        for idx in frame_indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
+    def init_video_capture(self):
+        """初始化视频捕获"""
+        try:
+            if self.video_capture is not None:
+                self.video_capture.release()
+            
+            self.video_capture = cv2.VideoCapture(self.video_path.get())
+            if not self.video_capture.isOpened():
+                self.log("无法打开视频文件")
+                return False
+            
+            # 获取视频总帧数
+            total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            if total_frames <= 0:
+                self.log("无法获取视频帧数")
+                return False
+            
+            # 读取第一帧来初始化预览
+            ret, frame = self.video_capture.read()
             if ret:
-                frames.append(frame)
-
-        cap.release()
-        return frames
-
-    def update_frame_previews(self):
-        """更新帧展示区域"""
-        for i, frame in enumerate(self.frames):
-            if frame is not None:
-                # 绘制预选框
                 frame_with_box = self.draw_crop_box(frame)
-                # 转换为 Tkinter 可显示的格式
-                frame_with_box = cv2.cvtColor(frame_with_box, cv2.COLOR_BGR2RGB)
-                frame_with_box = cv2.resize(frame_with_box, (300, 200))  # 调整大小以适应展示区域
-                img = Image.fromarray(frame_with_box)
-                imgtk = ImageTk.PhotoImage(image=img)
-                self.frame_labels[i].config(image=imgtk)
-                self.frame_labels[i].image = imgtk
+                self.show_preview_frame(frame_with_box)
+                # 重置到开始位置
+                self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                return True
+            return False
+        except Exception as e:
+            self.log(f"初始化视频失败: {str(e)}")
+            return False
 
-    def draw_crop_box(self, frame):
-        """在帧上绘制裁剪区域的预选框"""
-        h = frame.shape[0]
-        top = int(h * self.crop_top.get())
-        bottom = int(h * self.crop_bottom.get())
+    # def toggle_preview(self):
+    #     """切换预览状态"""
+    #     if not self.preview_playing:
+    #         if self.video_capture is None:
+    #             if not self.init_video_capture():
+    #                 return
+    #         self.preview_playing = True
+    #         self.preview_button.configure(text="停止预览")
+    #         self.update_preview()
+    #     else:
+    #         self.stop_preview()
 
-        # 复制帧并绘制矩形框
-        frame_with_box = frame.copy()
-        cv2.rectangle(frame_with_box, (0, top), (frame.shape[1], bottom), (0, 255, 0), 2)
-        return frame_with_box
+    def update_preview(self):
+        """更新预览画面"""
+        try:
+            if self.preview_playing and self.video_capture is not None and self.video_capture.isOpened():
+                ret, frame = self.video_capture.read()
+                if ret:
+                    # 更新时间显示
+                    current_frame = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES))
+                    total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = int(self.video_capture.get(cv2.CAP_PROP_FPS))
+                    if total_frames > 0 and fps > 0:
+                        current_time = current_frame / fps
+                        total_time = total_frames / fps
+                        self.time_label.config(
+                            text=f"{int(current_time//60):02d}:{int(current_time%60):02d} / "
+                                 f"{int(total_time//60):02d}:{int(total_time%60):02d}"
+                        )
+                    # 更新进度滑块
+                    current_frame = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES))
+                    total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                    if total_frames > 0:
+                        progress = (current_frame / total_frames) * 100
+                        self.video_progress.set(progress)
+                    
+                    # 显示带裁剪框的帧
+                    frame_with_box = self.draw_crop_box(frame)
+                    self.show_preview_frame(frame_with_box)
+                    
+                    # 继续更新
+                    self.preview_timer = self.root.after(30, self.update_preview)
+                else:
+                    # 视频结束，重新开始
+                    self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self.preview_timer = self.root.after(30, self.update_preview)
+            else:
+                self.stop_preview()
+        except Exception as e:
+            self.log(f"更新预览时出错: {str(e)}")
+            self.stop_preview()
 
-    def update_crop_labels_and_preview(self):
-        """更新裁剪区域标签和帧预览"""
-        # 更新标签
-        self.crop_top_label.config(text=f"{self.crop_top.get():.2f}")
-        self.crop_bottom_label.config(text=f"{self.crop_bottom.get():.2f}")
-
-        # 更新帧预览
-        self.update_frame_previews()
+    # def stop_preview(self):
+    #     """停止预览"""
+    #     self.preview_playing = False
+    #     self.preview_button.configure(text="播放预览")
+    #     if self.preview_timer:
+    #         self.root.after_cancel(self.preview_timer)
+    #         self.preview_timer = None
 
     def load_config(self):
         """加载配置文件"""
@@ -245,8 +316,10 @@ class SubtitleExtractorGUI:
         self.config['filter_words'] = [word.strip() for word in self.filter_words.get().split(',') if word.strip()]
         self.config['crop_top'] = self.crop_top.get()
         self.config['crop_bottom'] = self.crop_bottom.get()
+        self.config['crop_left'] = self.crop_left.get()
+        self.config['crop_right'] = self.crop_right.get()
         self.config['use_gpu'] = self.use_gpu.get()
-        self.config['use_memory'] = self.use_memory.get()  # 保存内存加速选项
+        self.config['use_memory'] = self.use_memory.get()
 
         with open('config.json', 'w', encoding='utf-8') as f:
             json.dump(self.config, f, ensure_ascii=False, indent=2)
@@ -304,6 +377,7 @@ class SubtitleExtractorGUI:
         frame_count = 0
         saved_count = 0
         crop_height = (self.crop_top.get(), self.crop_bottom.get())
+        crop_width = (self.crop_left.get(), self.crop_right.get())
 
         # 使用动态线程池大小
         thread_count = self.thread_count.get() if not self.use_gpu.get() else 2
@@ -322,8 +396,9 @@ class SubtitleExtractorGUI:
 
                 if frame_count % frame_interval == 0:
                     # 裁剪字幕区域用于相似性判断
-                    h = frame.shape[0]
-                    subtitle_frame = frame[int(h * crop_height[0]):int(h * crop_height[1]), :]
+                    h, w = frame.shape[:2]
+                    subtitle_frame = frame[int(h * crop_height[0]):int(h * crop_height[1]), 
+                                         int(w * crop_width[0]):int(w * crop_width[1])]
 
                     # 判断是否相似
                     if prev_subtitle_frame is None or not self.is_similar_frame(prev_subtitle_frame, subtitle_frame):
@@ -469,9 +544,9 @@ class SubtitleExtractorGUI:
     def start_processing(self):
         """开始处理视频"""
         self.save_config()
-        folder_path = self.folder_path.get()
-        if not folder_path:
-            self.log("请选择输入文件夹")
+        video_path = self.video_path.get()
+        if not video_path:
+            self.log("请选择视频文件")
             return
 
         # 重置停止标志
@@ -484,7 +559,6 @@ class SubtitleExtractorGUI:
         # 创建并启动处理线程
         self.processing_thread = threading.Thread(
             target=self.process_videos,
-            args=(folder_path,),
             daemon=True
         )
         self.processing_thread.start()
@@ -519,68 +593,39 @@ class SubtitleExtractorGUI:
         """从线程安全地更新日志"""
         self.root.after(0, lambda: self.log(message))
 
-    def process_videos(self, input_folder):
-        """并行处理指定文件夹中的所有视频"""
+    def process_videos(self):
+        """处理单个视频"""
         try:
-            start_time = time.time()
-            total_duration = 0
-            total_subtitles = 0
+            video_path = self.video_path.get()
+            if not video_path:
+                self.update_log("请选择视频文件")
+                return
 
+            start_time = time.time()
+            
             self.update_log("初始化 OCR 引擎...")
             ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang='ch',
                 use_gpu=self.use_gpu.get(),
                 show_log=False,
+                ocr_version='PP-OCRv4',
+                det_limit_side_len=2880,
+                det_db_thresh=0.1,
+                det_db_box_thresh=0.3,
+                det_db_unclip_ratio=2.0,
                 rec_thresh=0.6,
+                cls_thresh=0.9,
+                use_space_char=True,
+                use_mp=True
             )
 
-            # 获取所有视频文件
-            video_files = [f for f in sorted(os.listdir(input_folder))
-                           if f.endswith(('.mp4', '.avi', '.mkv', '.mov', '.flv'))]
+            # 处理视频
+            output_txt = os.path.splitext(video_path)[0] + ".txt"
+            frame_dir = os.path.splitext(video_path)[0] + "_frames"
 
-            self.root.after(0, lambda: self.progress.configure(maximum=len(video_files)))
-
-            # 使用线程池并行处理视频
-            with ThreadPoolExecutor(max_workers=self.thread_count.get()) as executor:
-                futures = []
-                for video_file in video_files:
-                    if self.stop_processing:
-                        break
-                    future = executor.submit(
-                        self.process_single_video,
-                        input_folder, video_file, ocr
-                    )
-                    futures.append(future)
-
-                # 等待所有任务完成并收集结果
-                for future in as_completed(futures):
-                    try:
-                        duration, subtitles_count = future.result()
-                        total_duration += duration
-                        total_subtitles += subtitles_count
-                    except Exception as e:
-                        self.update_log(f"处理视频时出错: {str(e)}")
-
-            total_time = time.time() - start_time
-            self.display_summary_statistics(len(video_files), total_duration, total_subtitles, total_time)
-
-        except Exception as e:
-            self.update_log(f"处理过程中出现错误: {str(e)}")
-
-    def process_single_video(self, input_folder, video_file, ocr):
-        """处理单个视频"""
-        video_path = os.path.join(input_folder, video_file)
-        frame_dir = os.path.join(input_folder, f"frames_{os.path.splitext(video_file)[0]}")
-        output_txt = os.path.join(input_folder, f"{os.path.splitext(video_file)[0]}.txt")
-
-        self.update_log(f"\n处理视频: {video_file}")
-
-        try:
-            # 获取视频信息
-            with VideoFileClip(video_path) as video:
-                duration = video.duration
-                self.update_log(f"视频时长: {duration:.1f} 秒")
+            if not self.use_memory.get():
+                os.makedirs(frame_dir, exist_ok=True)
 
             # 提取帧
             frame_cache = self.extract_frames(video_path, frame_dir)
@@ -598,40 +643,98 @@ class SubtitleExtractorGUI:
 
             # 保存字幕结果
             self.update_log("\n保存字幕结果...")
-            with open(output_txt, 'w', encoding='utf-8') as output_file:
-                output_file.write(f"{video_file}\n")
+            with open(output_txt, 'w', encoding='utf-8') as f:
+                f.write(f"{os.path.basename(video_path)}\n")
                 for subtitle in filtered_subtitles:
-                    output_file.write(f"{subtitle}\n")
+                    f.write(f"{subtitle}\n")
 
-            # 仅在磁盘存储模式下清理临时文件
-            if not self.use_memory.get():
+            # 清理临时文件
+            if not self.use_memory.get() and os.path.exists(frame_dir):
                 self.update_log("清理临时文件...")
                 for frame_file in os.listdir(frame_dir):
                     os.remove(os.path.join(frame_dir, frame_file))
                 os.rmdir(frame_dir)
 
-            return duration, len(filtered_subtitles)
+            total_time = time.time() - start_time
+            self.update_log(f"\n处理完成！总用时: {total_time:.2f} 秒")
 
         except Exception as e:
-            self.update_log(f"处理视频 {video_file} 时出错: {str(e)}")
-            raise
-    def display_summary_statistics(self, video_count, total_duration, total_subtitles, total_time):
-        """在界面显示总体统计信息"""
-        summary = f"""
-{'='*50}
-                统计信息总结
-{'='*50}
-作者: 忧郁男孩的救赎
-网站: blueboySalvat.top
-{'-'*50}
-处理视频总数: {video_count} 个
-视频总时长: {total_duration:.2f} 秒 ({total_duration/60:.2f} 分钟)
-识别字幕总数: {total_subtitles} 条
-处理总用时: {total_time:.2f} 秒 ({total_time/60:.2f} 分钟)
-平均处理速度: {total_duration/total_time:.2f}x
-{'='*50}
-"""
-        self.log(summary)
+            self.update_log(f"处理过程中出现错误: {str(e)}")
+
+    def update_crop_labels_and_preview(self):
+        """更新裁剪区域标签和预览帧"""
+        # 更新标签
+        self.crop_top_label.config(text=f"{self.crop_top.get():.2f}")
+        self.crop_bottom_label.config(text=f"{self.crop_bottom.get():.2f}")
+        self.crop_left_label.config(text=f"{self.crop_left.get():.2f}")
+        self.crop_right_label.config(text=f"{self.crop_right.get():.2f}")
+
+        # 如果视频已加载，更新预览帧
+        if self.video_capture is not None:
+            # 保存当前帧位置
+            current_pos = self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)
+            ret, frame = self.video_capture.read()
+            if ret:
+                # 绘制裁剪框并显示
+                frame_with_box = self.draw_crop_box(frame)
+                self.show_preview_frame(frame_with_box)
+                # 恢复帧位置
+                self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+
+    def on_progress_change(self, value):
+        """处理进度滑块变化"""
+        try:
+            if self.video_capture is not None and self.video_capture.isOpened():
+                # 设置视频位置
+                total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                if total_frames > 0:
+                    target_frame = int((float(value) / 100) * total_frames)
+                    self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                    
+                    # 显示当前帧
+                    ret, frame = self.video_capture.read()
+                    if ret:
+                        frame_with_box = self.draw_crop_box(frame)
+                        self.show_preview_frame(frame_with_box)
+        except Exception as e:
+            self.log(f"更新进度时出错: {str(e)}")
+
+    def show_preview_frame(self, frame):
+        """显示预览帧"""
+        # 转换帧为RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w = frame.shape[:2]
+        
+        # 计算调整后的尺寸（固定宽度为500像素）
+        new_width = 500
+        new_height = int(h * (new_width / w))
+        frame = cv2.resize(frame, (new_width, new_height))
+        
+        # 转换为PhotoImage
+        image = Image.fromarray(frame)
+        photo = ImageTk.PhotoImage(image)
+        
+        self.preview_label.configure(image=photo)
+        self.preview_label.image = photo  # 保持引用
+
+    def draw_crop_box(self, frame):
+        """在帧上绘制裁剪区域的预选框"""
+        if frame is None:
+            return None
+        
+        h, w = frame.shape[:2]
+        frame_with_box = frame.copy()
+        
+        # 获取裁剪区域坐标
+        top = int(h * self.crop_top.get())
+        bottom = int(h * self.crop_bottom.get())
+        left = int(w * self.crop_left.get())
+        right = int(w * self.crop_right.get())
+        
+        # 绘制矩形框
+        cv2.rectangle(frame_with_box, (left, top), (right, bottom), (0, 255, 0), 2)
+        
+        return frame_with_box
 
 if __name__ == "__main__":
     root = tk.Tk()

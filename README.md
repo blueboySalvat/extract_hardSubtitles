@@ -23,6 +23,9 @@
 - MoviePy
 - PyTorch（可选，用于GPU加速）
 
+### TODO
+- [] 自由选择批量处理还是单个处理
+
 ### 安装步骤
 
 1. **克隆仓库**
@@ -86,8 +89,8 @@
 如有任何问题或建议，请联系：
 
 - 作者：忧郁男孩的救赎
-- 网站：[blueboySalvat.top](https://blueboySalvat.top)
-- 邮箱：your.email@example.com
+- 网站：[blueboysalvat.github.io](https://blueboysalvat.github.io/)
+- 邮箱：blueboySalvat@163.com
 
 ---
 
