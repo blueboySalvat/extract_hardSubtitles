@@ -1,11 +1,11 @@
 {
   "filter_words": [],
-  "crop_top": 0.8295454545454546,
-  "crop_bottom": 0.9034090909090909,
+  "crop_top": 0.7556818181818182,
+  "crop_bottom": 0.8181818181818182,
   "use_gpu": false,
   "thread_count": 4,
   "batch_size": 8,
   "use_memory": true,
-  "crop_left": 0.20454545454545456,
-  "crop_right": 0.8181818181818182
+  "crop_left": 0.1590909090909091,
+  "crop_right": 0.8409090909090909
 }

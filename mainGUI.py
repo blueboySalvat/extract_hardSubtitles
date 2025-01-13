@@ -705,9 +705,16 @@ class SubtitleExtractorGUI:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w = frame.shape[:2]
         
-        # 计算调整后的尺寸（固定宽度为500像素）
+        # 计算调整后的尺寸（固定宽度为500像素，最大高度为300像素）
         new_width = 500
         new_height = int(h * (new_width / w))
+        
+        # 如果高度超过300像素，则按最大高度等比例缩放
+        max_height = 500
+        if new_height > max_height:
+            new_width = int(w * (max_height / h))
+            new_height = max_height
+        
         frame = cv2.resize(frame, (new_width, new_height))
         
         # 转换为PhotoImage
